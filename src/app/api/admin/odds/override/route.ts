@@ -6,9 +6,11 @@ import { z } from 'zod'
 const schema = z.object({
 event_id: z.number(),
 market: z.enum(['moneyline','spread','total']),
-fields: z.record(z.any())
-})
-
+ fields: z.record(
+    z.string(),
+    z.union([z.number(), z.string(), z.boolean(), z.null()])
+  )
+});
 
 export async function POST(req: Request) {
 const auth = req.headers.get('authorization')
