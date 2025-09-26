@@ -3,33 +3,24 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 
-export async function GET(request: Request) {
-  const url = new URL(request.url);
+export async function GET(req: Request) {
+  const url = new URL(req.url);
   const code = url.searchParams.get("code");
-
-  const cookieStore = await cookies();
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        get: (name: string) => cookieStore.get(name)?.value,
-        set: (name: string, value: string, options?: any) => {
-          cookieStore.set({ name, value, ...options });
-        },
-        remove: (name: string, options?: any) => {
-          cookieStore.delete({ name, ...options });
-        },
-      },
-    }
+    { cookies } // pass the cookies() helper directly (ssr v0.5.x)
   );
 
   if (code) {
-    await supabase.auth.exchangeCodeForSession(code);
+    try {
+      await supabase.auth.exchangeCodeForSession(code);
+    } catch {
+      // ignore & continue to redirect
+    }
   }
 
-  return NextResponse.redirect(
-    new URL("/dashboard", process.env.NEXT_PUBLIC_SITE_URL)
-  );
+  const base = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+  return NextResponse.redirect(new URL("/dashboard", base));
 }
