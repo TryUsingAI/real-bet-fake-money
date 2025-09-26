@@ -1,22 +1,18 @@
-// src/lib/supabase-server.ts
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 
 export async function supabaseServer() {
-  const store = await cookies();
-
+  const cookieStore = await cookies();
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get: (name: string) => store.get(name)?.value,
-        set: (name: string, value: string, options?: any) => {
-          store.set({ name, value, ...options });
-        },
-        remove: (name: string, options?: any) => {
-          store.delete({ name, ...options });
-        },
+        get: (name: string) => cookieStore.get(name)?.value ?? null,
+        set: (name: string, value: string, options?: any) =>
+          cookieStore.set({ name, value, ...options }),
+        remove: (name: string, options?: any) =>
+          cookieStore.set({ name, value: "", ...options, maxAge: 0 }),
       },
     }
   );
