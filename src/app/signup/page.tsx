@@ -13,7 +13,12 @@ export default function Signup() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true); setErr(null);
-    const { data, error } = await supabase.auth.signUp({ email, password });
+    const { data, error } = await supabase.auth.signUp({
+  email,
+  password,
+  options: { emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/auth/callback` }
+});
+
     if (error) { setErr(error.message); setLoading(false); return; }
 
     // Ensure wallet row exists at $1,000 for new users
