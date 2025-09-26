@@ -1,179 +1,200 @@
-"use client";
-import { useEffect, useMemo, useState } from "react";
-import { supabase } from "@/lib/supabase-browser";
-import BetSlip from "@/components/BetSlip";
+// src/app/odds/page.tsx
+import { supabaseAdmin } from "@/lib/supabase";
 
-type EventRow = {
-  id: number; league: string; home_team: string; away_team: string;
-  commence_time: string; status: string;
+type DbRow = {
+  event_id: number;
+  home_ml: number | null;
+  away_ml: number | null;
+  spread_line: number | null;
+  home_spread_american: number | null;
+  away_spread_american: number | null;
+  total_line: number | null;
+  over_american: number | null;
+  under_american: number | null;
+  events: { home_team: string; away_team: string; commence_time: string } | null;
 };
-type OddsRow = {
-  id: number; event_id: number; market: "h2h"|"spreads"|"totals";
-  home_price: number|null; away_price: number|null;
-  home_line: number|null;  away_line: number|null;
+
+type Merged = {
+  event_id: number;
+  home_team: string;
+  away_team: string;
+  commence_time: string | null;
+
+  home_ml: number | null;
+  away_ml: number | null;
+
+  home_spread_points: number | null;
+  home_spread_american: number | null;
+  away_spread_points: number | null;
+  away_spread_american: number | null;
+
+  total_points: number | null;
+  over_price: number | null;
+  under_price: number | null;
 };
 
-export default function OddsPage() {
-  const [events, setEvents] = useState<EventRow[]>([]);
-  const [odds, setOdds] = useState<OddsRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selection, setSelection] = useState<{
-    event: EventRow;
-    market: "moneyline"|"spread"|"total";
-    side: "home"|"away"|"over"|"under";
-    line: number|null;
-    odds: number;
-  }|null>(null);
+function fmtAmerican(n: number | null | undefined) {
+  if (n == null) return "—";
+  const s = n >= 0 ? `+${n}` : `${n}`;
+  return s;
+}
+function fmtSpread(n: number | null | undefined) {
+  if (n == null) return "—";
+  // show + for positive, keep .5 if present
+  const s = n > 0 ? `+${n}` : `${n}`;
+  return s;
+}
+function fmtTotalRow(total: number | null, over: number | null, under: number | null) {
+  if (total == null) return "—";
+  return (
+    <>
+      <div>{`O ${total} (${fmtAmerican(over)})`}</div>
+      <div>{`U ${total} (${fmtAmerican(under)})`}</div>
+    </>
+  );
+}
 
-  useEffect(() => {
-    (async () => {
-      const nowMinus6h = new Date(Date.now() - 6*3600e3).toISOString();
-      const [e, o] = await Promise.all([
-        supabase.from("events").select("*").gte("commence_time", nowMinus6h).order("commence_time"),
-        supabase.from("odds").select("*"),
-      ]);
-      setEvents(e.data ?? []);
-      setOdds(o.data ?? []);
-      setLoading(false);
-    })();
-  }, []);
+export default async function OddsPage() {
+  const supabase = supabaseAdmin();
 
-  const byEvent = useMemo(() => {
-    const m = new Map<number, { h2h?: OddsRow; spreads?: OddsRow; totals?: OddsRow }>();
-    for (const r of odds) {
-      const slot = m.get(r.event_id) ?? {};
-      if (r.market === "h2h") slot.h2h = r;
-      if (r.market === "spreads") slot.spreads = r;
-      if (r.market === "totals") slot.totals = r;
-      m.set(r.event_id, slot);
+const { data, error } = await supabase
+  .from('odds')
+  .select(`
+    event_id,
+    home_ml, away_ml, spread_line, home_spread_american, away_spread_american,
+    total_line, over_american, under_american,
+    events:events!inner(home_team, away_team, commence_time)
+  `)
+  .returns<DbRow[]>();
+
+  if (error) {
+    return (
+      <main className="p-6">
+        <h1 className="text-2xl font-bold mb-6">Odds</h1>
+        <div className="text-red-400">{error.message}</div>
+      </main>
+    );
+  }
+
+  const byEvent = new Map<number, Merged>();
+
+ for (const r of data ?? []) {
+  const ev = r.events; // <— not r.events?.[0]
+  const base: Merged =
+    byEvent.get(r.event_id) ?? {
+      event_id: r.event_id,
+      home_team: ev?.home_team ?? "",
+      away_team: ev?.away_team ?? "",
+      commence_time: ev?.commence_time ?? null,
+      home_ml: null,
+      away_ml: null,
+      home_spread_points: null,
+      home_spread_american: null,
+      away_spread_points: null,
+      away_spread_american: null,
+      total_points: null,
+      over_price: null,
+      under_price: null,
+    };
+
+
+    // Moneyline
+    if (r.home_ml != null) base.home_ml ??= r.home_ml;
+    if (r.away_ml != null) base.away_ml ??= r.away_ml;
+
+    // Spread: one line is from home POV; away is the negative
+    if (r.spread_line != null) {
+      base.home_spread_points ??= r.spread_line;
+      base.away_spread_points ??= -r.spread_line;
     }
-    return m;
-  }, [odds]);
+    if (r.home_spread_american != null)
+      base.home_spread_american ??= r.home_spread_american;
+    if (r.away_spread_american != null)
+      base.away_spread_american ??= r.away_spread_american;
 
-  if (loading) return <main className="p-6">Loading…</main>;
+    // Totals
+    if (r.total_line != null) base.total_points ??= r.total_line;
+    if (r.over_american != null) base.over_price ??= r.over_american;
+    if (r.under_american != null) base.under_price ??= r.under_american;
+
+    byEvent.set(r.event_id, base);
+  }
+
+  const rows = Array.from(byEvent.values());
 
   return (
-    <main className="mx-auto max-w-6xl px-4 py-8">
-      <h1 className="text-3xl font-bold mb-6">Odds</h1>
+    <main className="p-6">
+      <h1 className="text-2xl font-bold mb-6">Odds</h1>
 
-      <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-        {events.map((ev) => {
-          const pack = byEvent.get(ev.id) ?? {};
-          const starts = new Date(ev.commence_time);
-          const locked = ev.status !== "open" || starts <= new Date();
+      <div className="overflow-x-auto rounded-lg border border-white/10">
+        <table className="min-w-full text-sm">
+          <thead className="bg-white/5 text-left text-white/80">
+            <tr>
+              <th className="px-4 py-3 w-[36%]">Game / Time</th>
+              <th className="px-4 py-3">Home ML</th>
+              <th className="px-4 py-3">Away ML</th>
+              <th className="px-4 py-3">Home Spread</th>
+              <th className="px-4 py-3">Away Spread</th>
+              <th className="px-4 py-3">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const homeSpread =
+                r.home_spread_points == null && r.home_spread_american == null
+                  ? "—"
+                  : `${fmtSpread(r.home_spread_points)} (${fmtAmerican(
+                      r.home_spread_american
+                    )})`;
+              const awaySpread =
+                r.away_spread_points == null && r.away_spread_american == null
+                  ? "—"
+                  : `${fmtSpread(r.away_spread_points)} (${fmtAmerican(
+                      r.away_spread_american
+                    )})`;
 
-          // moneyline
-          const mlHome = pack.h2h?.home_price ?? null;
-          const mlAway = pack.h2h?.away_price ?? null;
-          const mlDisabled = locked || mlHome === null || mlAway === null;
+              const start =
+                r.commence_time
+                  ? new Date(r.commence_time)
+                      .toLocaleString(undefined, {
+                        month: "short",
+                        day: "2-digit",
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })
+                  : "";
 
-          // spreads
-          const spHomeLine = pack.spreads?.home_line ?? null;
-          const spHomePrice = pack.spreads?.home_price ?? null;
-          const spAwayLine = pack.spreads?.away_line ?? null;
-          const spAwayPrice = pack.spreads?.away_price ?? null;
-          const spDisabled = locked || [spHomeLine, spHomePrice, spAwayLine, spAwayPrice].some(v => v === null);
-
-          // totals
-          const totOverLine = pack.totals?.home_line ?? null;   // store over on home_line
-          const totOverPrice = pack.totals?.home_price ?? null;
-          const totUnderLine = pack.totals?.away_line ?? null;  // store under on away_line
-          const totUnderPrice = pack.totals?.away_price ?? null;
-          const totDisabled = locked || [totOverLine, totOverPrice, totUnderLine, totUnderPrice].some(v => v === null);
-
-          return (
-            <div key={ev.id} className="rounded-2xl bg-[#0b0f1a] border border-white/10 p-5">
-              <div className="flex items-baseline justify-between mb-3">
-                <div className="text-sm opacity-70">{starts.toLocaleString()}</div>
-                <div className="text-xs uppercase tracking-wide opacity-60">{ev.league}</div>
-              </div>
-
-              <div className="font-medium mb-4">
-                <span className="opacity-80">{ev.away_team}</span>
-                <span className="opacity-50 mx-1">@</span>
-                <span className="text-[#F6C700]">{ev.home_team}</span>
-              </div>
-
-              <section className="mb-4">
-                <div className="text-xs uppercase opacity-60 mb-2">Moneyline</div>
-                <div className="flex gap-2">
-                  <Btn
-                    label={`${ev.home_team} ${fmtPrice(mlHome)}`}
-                    disabled={mlDisabled}
-                    onClick={() => mlHome!==null && setSelection({ event: ev, market: "moneyline", side: "home", line: null, odds: mlHome })}
-                  />
-                  <Btn
-                    label={`${ev.away_team} ${fmtPrice(mlAway)}`}
-                    disabled={mlDisabled}
-                    onClick={() => mlAway!==null && setSelection({ event: ev, market: "moneyline", side: "away", line: null, odds: mlAway })}
-                  />
-                </div>
-              </section>
-
-              <section className="mb-4">
-                <div className="text-xs uppercase opacity-60 mb-2">Spread</div>
-                <div className="flex gap-2">
-                  <Btn
-                    label={`${ev.home_team} ${fmtLine(spHomeLine)} (${fmtPrice(spHomePrice)})`}
-                    disabled={spDisabled}
-                    onClick={() =>
-                      spHomeLine!==null && spHomePrice!==null &&
-                      setSelection({ event: ev, market: "spread", side: "home", line: spHomeLine, odds: spHomePrice })
-                    }
-                  />
-                  <Btn
-                    label={`${ev.away_team} ${fmtLine(spAwayLine)} (${fmtPrice(spAwayPrice)})`}
-                    disabled={spDisabled}
-                    onClick={() =>
-                      spAwayLine!==null && spAwayPrice!==null &&
-                      setSelection({ event: ev, market: "spread", side: "away", line: spAwayLine, odds: spAwayPrice })
-                    }
-                  />
-                </div>
-              </section>
-
-              <section>
-                <div className="text-xs uppercase opacity-60 mb-2">Total</div>
-                <div className="flex gap-2">
-                  <Btn
-                    label={`Over ${fmtLine(totOverLine)} (${fmtPrice(totOverPrice)})`}
-                    disabled={totDisabled}
-                    onClick={() =>
-                      totOverLine!==null && totOverPrice!==null &&
-                      setSelection({ event: ev, market: "total", side: "over", line: totOverLine, odds: totOverPrice })
-                    }
-                  />
-                  <Btn
-                    label={`Under ${fmtLine(totUnderLine)} (${fmtPrice(totUnderPrice)})`}
-                    disabled={totDisabled}
-                    onClick={() =>
-                      totUnderLine!==null && totUnderPrice!==null &&
-                      setSelection({ event: ev, market: "total", side: "under", line: totUnderLine, odds: totUnderPrice })
-                    }
-                  />
-                </div>
-              </section>
-            </div>
-          );
-        })}
+              return (
+                <tr key={r.event_id} className="border-t border-white/10">
+                  <td className="px-4 py-4">
+                    <div className="font-medium">
+                      {r.home_team} vs {r.away_team}
+                    </div>
+                    <div className="text-white/60 text-xs">{start}</div>
+                  </td>
+                  <td className="px-4 py-4">{fmtAmerican(r.home_ml)}</td>
+                  <td className="px-4 py-4">{fmtAmerican(r.away_ml)}</td>
+                  <td className="px-4 py-4">{homeSpread}</td>
+                  <td className="px-4 py-4">{awaySpread}</td>
+                  <td className="px-4 py-4">
+                    {fmtTotalRow(r.total_points, r.over_price, r.under_price)}
+                  </td>
+                </tr>
+              );
+            })}
+            {rows.length === 0 && (
+              <tr>
+                <td
+                  className="px-4 py-6 text-white/60 text-center"
+                  colSpan={6}
+                >
+                  No odds available.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
-
-      <BetSlip selection={selection} onClose={() => setSelection(null)} />
     </main>
   );
 }
-
-function Btn({ label, onClick, disabled }: { label: string; onClick: () => void; disabled?: boolean }) {
-  return (
-    <button
-      disabled={disabled}
-      onClick={onClick}
-      className={`rounded-lg px-3 py-2 text-sm border ${disabled ? "border-white/10 text-white/30" : "border-white/20 hover:bg-white/10"}`}
-    >
-      {label}
-    </button>
-  );
-}
-
-const fmtPrice = (p: number | null) => (p===null ? "—" : p>0 ? `+${p}` : `${p}`);
-const fmtLine  = (l: number | null) => (l===null ? "—" : l>0 ? `+${l}` : `${l}`);
