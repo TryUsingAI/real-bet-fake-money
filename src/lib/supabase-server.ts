@@ -1,10 +1,23 @@
-import { cookies } from 'next/headers'
-import { createServerClient } from '@supabase/ssr'
+// src/lib/supabase-server.ts
+import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/ssr";
 
-export function supabaseServer() {
+export async function supabaseServer() {
+  const store = await cookies();
+
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { cookies }
-  )
+    {
+      cookies: {
+        get: (name: string) => store.get(name)?.value,
+        set: (name: string, value: string, options?: any) => {
+          store.set({ name, value, ...options });
+        },
+        remove: (name: string, options?: any) => {
+          store.delete({ name, ...options });
+        },
+      },
+    }
+  );
 }

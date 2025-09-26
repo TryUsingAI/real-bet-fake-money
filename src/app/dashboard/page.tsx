@@ -4,7 +4,7 @@ import { supabaseServer } from '@/lib/supabase-server'
 export const dynamic = 'force-dynamic' // always render with current session
 
 export default async function DashboardPage() {
-  const supabase = supabaseServer()
+  const supabase = await supabaseServer()
 
   // get signed-in user from cookies/session
   const { data: { user } } = await supabase.auth.getUser()
