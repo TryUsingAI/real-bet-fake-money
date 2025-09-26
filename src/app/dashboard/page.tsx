@@ -1,87 +1,73 @@
-import { redirect } from 'next/navigation'
-import { supabaseServer } from '@/lib/supabase-server'
-
-export const dynamic = 'force-dynamic' // always render with current session
+import { supabaseServer } from "@/lib/supabase-server"
+import { redirect } from "next/navigation"
 
 export default async function DashboardPage() {
   const supabase = await supabaseServer()
 
-  // get signed-in user from cookies/session
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/login')
+  // Get the current authenticated user
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser()
 
-  // fetch data scoped to THIS user (RLS still protects in DB)
+  if (userError || !user) {
+    // If no user, go back to login
+    redirect("/login")
+  }
+
+  // Fetch wallet and bets in parallel
   const [{ data: wallet }, { data: bets }] = await Promise.all([
-    supabase.from('wallets').select('balance_cents').eq('user_id', user.id).maybeSingle(),
-    supabase.from('v_user_bets').select('*').order('placed_at', { ascending: false }).limit(20)
+    supabase
+      .from("wallets")
+      .select("balance_cents")
+      .eq("user_id", user.id)
+      .single(),
+    supabase
+      .from("v_user_bets")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("placed_at", { ascending: false })
+      .limit(20),
   ])
 
-  const balance = wallet?.balance_cents ?? 0
-
   return (
-    <div className="p-6 space-y-6">
-      <h1 className="text-3xl font-bold">Dashboard</h1>
+    <main className="max-w-2xl mx-auto p-6">
+      <h1 className="text-2xl font-bold mb-4">Dashboard</h1>
 
-      <div className="grid md:grid-cols-2 gap-4">
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
-          <div className="text-sm text-white/70">Wallet balance</div>
-          <div className="text-4xl font-extrabold mt-2">
-            ${(balance / 100).toFixed(2)}
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
-          <div className="text-sm text-white/70">Leaderboard</div>
-          <div className="mt-2 text-white/50">Coming soon</div>
-        </div>
-      </div>
-
-      <section className="rounded-2xl border border-white/10 bg-white/5">
-        <div className="px-6 py-4 text-lg font-semibold">Recent bets</div>
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="text-white/70 border-t border-white/10">
-              <tr>
-                <th className="px-6 py-3 text-left">Game</th>
-                <th className="px-6 py-3 text-left">Market</th>
-                <th className="px-6 py-3 text-left">Pick</th>
-                <th className="px-6 py-3 text-left">Odds</th>
-                <th className="px-6 py-3 text-left">Line</th>
-                <th className="px-6 py-3 text-left">Stake</th>
-                <th className="px-6 py-3 text-left">Status</th>
-                <th className="px-6 py-3 text-left">Payout</th>
-                <th className="px-6 py-3 text-left">Placed</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(bets ?? []).map((b: any) => (
-                <tr key={b.id} className="border-t border-white/10">
-                  <td className="px-6 py-3">
-                    {b.home_team} <span className="text-white/60">@</span> {b.away_team}
-                  </td>
-                  <td className="px-6 py-3">{b.market}</td>
-                  <td className="px-6 py-3">{b.selection}</td>
-                  <td className="px-6 py-3">{b.odds_american}</td>
-                  <td className="px-6 py-3">{b.line ?? '—'}</td>
-                  <td className="px-6 py-3">${(b.stake_cents / 100).toFixed(2)}</td>
-                  <td className="px-6 py-3">{b.status}</td>
-                  <td className="px-6 py-3">
-                    {b.payout_cents ? `$${(b.payout_cents / 100).toFixed(2)}` : '—'}
-                  </td>
-                  <td className="px-6 py-3">
-                    {b.placed_at ? new Date(b.placed_at).toLocaleString() : '—'}
-                  </td>
-                </tr>
-              ))}
-              {(!bets || bets.length === 0) && (
-                <tr className="border-t border-white/10">
-                  <td className="px-6 py-6 text-white/60" colSpan={9}>No bets yet.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+      {/* Wallet Balance */}
+      <section className="mb-6">
+        <h2 className="text-xl font-semibold">Wallet</h2>
+        <p className="text-lg">
+          Balance:{" "}
+          {wallet
+            ? `$${(wallet.balance_cents / 100).toFixed(2)}`
+            : "No wallet found"}
+        </p>
       </section>
-    </div>
+
+      {/* Recent Bets */}
+      <section>
+        <h2 className="text-xl font-semibold mb-2">Recent Bets</h2>
+        {!bets || bets.length === 0 ? (
+          <p className="text-gray-400">No bets placed yet.</p>
+        ) : (
+          <ul className="space-y-2">
+            {bets.map((bet) => (
+              <li
+                key={bet.id}
+                className="border rounded p-3 bg-white/5 flex justify-between"
+              >
+                <span>
+                  {bet.game} — {bet.pick}
+                </span>
+                <span className="font-semibold">
+                  Wager: ${(bet.amount_cents / 100).toFixed(2)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </main>
   )
 }
