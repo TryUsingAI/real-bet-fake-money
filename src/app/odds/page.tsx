@@ -43,15 +43,6 @@ function fmtSpread(n: number | null | undefined) {
   if (n == null) return "—";
   return n > 0 ? `+${n}` : `${n}`;
 }
-function fmtTotalRow(total: number | null, over: number | null, under: number | null) {
-  if (total == null) return "—";
-  return (
-    <>
-      <div>{`O ${total} (${fmtAmerican(over)})`}</div>
-      <div>{`U ${total} (${fmtAmerican(under)})`}</div>
-    </>
-  );
-}
 
 export default async function OddsPage() {
   const supabase = supabaseAdmin();
@@ -75,13 +66,11 @@ export default async function OddsPage() {
     );
   }
 
+  // Merge rows by event_id (ML, spread, totals may arrive in separate rows)
   const byEvent = new Map<number, Merged>();
-
   for (const r of data ?? []) {
-    // normalize embed: object | array -> object
     const evRaw = r.events as DbRow["events"];
-    const ev =
-      Array.isArray(evRaw) ? evRaw[0] : evRaw; // robust to either shape
+    const ev = Array.isArray(evRaw) ? evRaw[0] : evRaw;
 
     const base: Merged =
       byEvent.get(r.event_id) ?? {
@@ -100,9 +89,11 @@ export default async function OddsPage() {
         under_price: null,
       };
 
+    // ML
     if (r.home_ml != null) base.home_ml ??= r.home_ml;
     if (r.away_ml != null) base.away_ml ??= r.away_ml;
 
+    // Spread (single home-based line)
     if (r.spread_line != null) {
       base.home_spread_points ??= r.spread_line;
       base.away_spread_points ??= -r.spread_line;
@@ -112,6 +103,7 @@ export default async function OddsPage() {
     if (r.away_spread_american != null)
       base.away_spread_american ??= r.away_spread_american;
 
+    // Totals
     if (r.total_line != null) base.total_points ??= r.total_line;
     if (r.over_american != null) base.over_price ??= r.over_american;
     if (r.under_american != null) base.under_price ??= r.under_american;
@@ -125,7 +117,7 @@ export default async function OddsPage() {
     <main className="p-6">
       <h1 className="text-2xl font-bold mb-6">Odds</h1>
 
-      {/* Bridge: decode payload and raise "open-bet" for BetSlip */}
+      {/* Bridge: decode payload and raise `bet:open` for BetSlip */}
       <Script id="bet-open-bridge">{`
         (function () {
           if (window.__betBridgeInstalled) return;
@@ -139,7 +131,7 @@ export default async function OddsPage() {
               const raw = el.getAttribute('data-bet');
               if (!raw) return;
               const payload = JSON.parse(decodeURIComponent(raw));
-              window.dispatchEvent(new CustomEvent('open-bet', { detail: payload }));
+              window.dispatchEvent(new CustomEvent('bet:open', { detail: payload }));
             } catch {}
           }, true);
         })();
@@ -162,11 +154,15 @@ export default async function OddsPage() {
               const homeSpread =
                 r.home_spread_points == null && r.home_spread_american == null
                   ? "—"
-                  : `${fmtSpread(r.home_spread_points)} (${fmtAmerican(r.home_spread_american)})`;
+                  : `${fmtSpread(r.home_spread_points)} (${fmtAmerican(
+                      r.home_spread_american
+                    )})`;
               const awaySpread =
                 r.away_spread_points == null && r.away_spread_american == null
                   ? "—"
-                  : `${fmtSpread(r.away_spread_points)} (${fmtAmerican(r.away_spread_american)})`;
+                  : `${fmtSpread(r.away_spread_points)} (${fmtAmerican(
+                      r.away_spread_american
+                    )})`;
 
               const start = r.commence_time
                 ? new Date(r.commence_time).toLocaleString(undefined, {
@@ -177,53 +173,65 @@ export default async function OddsPage() {
                   })
                 : "";
 
+              // Build payloads for BetSlip (MUST match BetSlip's BetPayload)
               const base = {
-                event_id: r.event_id,
-                home_team: r.home_team,
-                away_team: r.away_team,
-                commence_time: r.commence_time,
+                eventId: r.event_id,
+                homeTeam: r.home_team,
+                awayTeam: r.away_team,
               };
 
-              const betMlHome = encodeURIComponent(
-                JSON.stringify({ ...base, market: "moneyline", side: "home", price: r.home_ml })
+              const pMlHome = encodeURIComponent(
+                JSON.stringify({
+                  ...base,
+                  market: "ml",
+                  side: "home",
+                  odds: r.home_ml,
+                  line: null,
+                })
               );
-              const betMlAway = encodeURIComponent(
-                JSON.stringify({ ...base, market: "moneyline", side: "away", price: r.away_ml })
+              const pMlAway = encodeURIComponent(
+                JSON.stringify({
+                  ...base,
+                  market: "ml",
+                  side: "away",
+                  odds: r.away_ml,
+                  line: null,
+                })
               );
-              const betSprHome = encodeURIComponent(
+              const pSprHome = encodeURIComponent(
                 JSON.stringify({
                   ...base,
                   market: "spread",
                   side: "home",
-                  points: r.home_spread_points,
-                  price: r.home_spread_american,
+                  odds: r.home_spread_american,
+                  line: r.home_spread_points,
                 })
               );
-              const betSprAway = encodeURIComponent(
+              const pSprAway = encodeURIComponent(
                 JSON.stringify({
                   ...base,
                   market: "spread",
                   side: "away",
-                  points: r.away_spread_points,
-                  price: r.away_spread_american,
+                  odds: r.away_spread_american,
+                  line: r.away_spread_points,
                 })
               );
-              const betOver = encodeURIComponent(
+              const pOver = encodeURIComponent(
                 JSON.stringify({
                   ...base,
-                  market: "total",
+                  market: "total_over",
                   side: "over",
-                  points: r.total_points,
-                  price: r.over_price,
+                  odds: r.over_price,
+                  line: r.total_points,
                 })
               );
-              const betUnder = encodeURIComponent(
+              const pUnder = encodeURIComponent(
                 JSON.stringify({
                   ...base,
-                  market: "total",
+                  market: "total_under",
                   side: "under",
-                  points: r.total_points,
-                  price: r.under_price,
+                  odds: r.under_price,
+                  line: r.total_points,
                 })
               );
 
@@ -236,12 +244,12 @@ export default async function OddsPage() {
                     <div className="text-white/60 text-xs">{start}</div>
                   </td>
 
-                  {/* ML */}
+                  {/* Moneyline */}
                   <td className="px-4 py-4">
                     <button
                       type="button"
                       className="rounded px-2 py-1 hover:bg-white/5"
-                      data-bet={betMlHome}
+                      data-bet={pMlHome}
                       disabled={r.home_ml == null}
                     >
                       {fmtAmerican(r.home_ml)}
@@ -251,7 +259,7 @@ export default async function OddsPage() {
                     <button
                       type="button"
                       className="rounded px-2 py-1 hover:bg-white/5"
-                      data-bet={betMlAway}
+                      data-bet={pMlAway}
                       disabled={r.away_ml == null}
                     >
                       {fmtAmerican(r.away_ml)}
@@ -263,9 +271,10 @@ export default async function OddsPage() {
                     <button
                       type="button"
                       className="rounded px-2 py-1 hover:bg-white/5"
-                      data-bet={betSprHome}
+                      data-bet={pSprHome}
                       disabled={
-                        r.home_spread_points == null && r.home_spread_american == null
+                        r.home_spread_points == null &&
+                        r.home_spread_american == null
                       }
                     >
                       {homeSpread}
@@ -275,9 +284,10 @@ export default async function OddsPage() {
                     <button
                       type="button"
                       className="rounded px-2 py-1 hover:bg-white/5"
-                      data-bet={betSprAway}
+                      data-bet={pSprAway}
                       disabled={
-                        r.away_spread_points == null && r.away_spread_american == null
+                        r.away_spread_points == null &&
+                        r.away_spread_american == null
                       }
                     >
                       {awaySpread}
@@ -290,7 +300,7 @@ export default async function OddsPage() {
                       <button
                         type="button"
                         className="rounded px-2 py-1 hover:bg-white/5"
-                        data-bet={betOver}
+                        data-bet={pOver}
                         disabled={r.total_points == null && r.over_price == null}
                       >
                         {r.total_points == null
@@ -300,7 +310,7 @@ export default async function OddsPage() {
                       <button
                         type="button"
                         className="rounded px-2 py-1 hover:bg-white/5"
-                        data-bet={betUnder}
+                        data-bet={pUnder}
                         disabled={r.total_points == null && r.under_price == null}
                       >
                         {r.total_points == null

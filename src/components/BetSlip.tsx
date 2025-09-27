@@ -1,138 +1,141 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
-type Market = "moneyline" | "spread" | "total";
-
-type OpenPayload = {
-  eventId: number;
-  market: Market;
+type BetPayload = {
+  market: "ml" | "spread" | "total_over" | "total_under";
   side: "home" | "away" | "over" | "under";
+  eventId: number;
   odds: number | null;
-  line?: number | null; // spread points or total points (if applicable)
-  matchup: string;      // "Home vs Away" (for display)
+  line: number | null;
+  homeTeam: string;
+  awayTeam: string;
 };
+type OpenEvt = CustomEvent<BetPayload>;
+const EVT = "bet:open";
 
-// Allow window.addEventListener("open-betslip", …) with typed detail
-declare global {
-  interface WindowEventMap {
-    "open-betslip": CustomEvent<OpenPayload>;
-  }
+export function openBet(payload: BetPayload) {
+  window.dispatchEvent(new CustomEvent(EVT, { detail: payload }));
 }
 
 export default function BetSlip() {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [payload, setPayload] = useState<OpenPayload | null>(null);
-  const [stake, setStake] = useState<string>("5");
+  const [bet, setBet] = useState<BetPayload | null>(null);
+  const [wager, setWager] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    const onOpen = (e: WindowEventMap["open-betslip"]) => {
-      setPayload(e.detail);
-      setStake("5");
-      setError(null);
+    const handler = (e: Event) => {
+      const ce = e as OpenEvt;
+      setBet(ce.detail);
+      setWager("");
+      setMessage(null);
       setOpen(true);
     };
-    window.addEventListener("open-betslip", onOpen);
-    return () => window.removeEventListener("open-betslip", onOpen);
+    window.addEventListener(EVT, handler as EventListener);
+    return () => window.removeEventListener(EVT, handler as EventListener);
   }, []);
 
-  async function placeBet() {
-    if (!payload) return;
-    setSubmitting(true);
-    setError(null);
+  const title = useMemo(() => {
+    if (!bet) return "";
+    const vs = `${bet.homeTeam} vs ${bet.awayTeam}`;
+    if (bet.market === "ml") {
+      const t = bet.side === "home" ? bet.homeTeam : bet.awayTeam;
+      return `${t} ML @ ${fmtAmerican(bet.odds)}`;
+    }
+    if (bet.market === "spread") {
+      const t = bet.side === "home" ? bet.homeTeam : bet.awayTeam;
+      const line = bet.line == null ? "—" : bet.line > 0 ? `+${bet.line}` : `${bet.line}`;
+      return `${t} ${line} (${fmtAmerican(bet.odds)})`;
+    }
+    const tag = bet.market === "total_over" ? "Over" : "Under";
+    const line = bet.line ?? "—";
+    return `${tag} ${line} (${fmtAmerican(bet.odds)})`;
+  }, [bet]);
 
+  const canSubmit = !!bet && wager.trim() !== "" && Number(wager) > 0 && !submitting;
+
+  const submit = async () => {
+    if (!bet) return;
+    setSubmitting(true);
+    setMessage(null);
     try {
       const res = await fetch("/api/bets/place", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          event_id: payload.eventId,
-          market: payload.market,
-          side: payload.side,
-          odds: payload.odds,
-          line: payload.line ?? null,
-          stake_cents: Math.round(Number(stake || "0") * 100),
+          event_id: bet.eventId,
+          market: bet.market === "total_over" || bet.market === "total_under" ? "total" : bet.market,
+          side: bet.market === "total_over" ? "over" : bet.market === "total_under" ? "under" : bet.side,
+          line: bet.line,
+          odds: bet.odds,
+          wager_dollars: Number(wager),
         }),
       });
-
       if (!res.ok) {
-        const msg = await res.text().catch(() => "");
-        throw new Error(msg || `Bet failed (${res.status})`);
+        setMessage((await res.text()) || "Bet failed.");
+        setSubmitting(false);
+        return;
       }
-
-      // success: close the slip
-      setOpen(false);
-      setPayload(null);
+      setMessage("Bet placed!");
+      // quick visual confirmation then redirect to dashboard
+      setTimeout(() => {
+        setOpen(false);
+        router.push("/dashboard");
+        router.refresh();
+      }, 700);
     } catch (err: any) {
-      setError(err?.message ?? "Bet failed");
-    } finally {
+      setMessage(err?.message ?? "Bet failed.");
       setSubmitting(false);
     }
-  }
+  };
 
-  if (!open || !payload) return null;
-
-  const label =
-    payload.market === "moneyline"
-      ? `${payload.side === "home" ? "Home" : "Away"} ML ${fmtAmerican(payload.odds)}`
-      : payload.market === "spread"
-      ? `${payload.side === "home" ? "Home" : "Away"} ${fmtSpread(payload.line)} (${fmtAmerican(payload.odds)})`
-      : // total
-        `${payload.side === "over" ? "Over" : "Under"} ${fmtSpread(payload.line)} (${fmtAmerican(payload.odds)})`;
-
-  const stakeNum = Number(stake || "0");
-  const payout =
-    payload.odds == null || isNaN(stakeNum)
-      ? 0
-      : payload.odds > 0
-      ? stakeNum + (stakeNum * payload.odds) / 100
-      : stakeNum + (stakeNum * 100) / Math.abs(payload.odds);
+  if (!open || !bet) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-[320px] rounded-xl border border-white/10 bg-zinc-900 p-4 shadow-xl">
-      <div className="flex items-start justify-between">
-        <div className="font-semibold">Bet Slip</div>
-        <button
-          onClick={() => setOpen(false)}
-          className="text-white/60 hover:text-white"
-          aria-label="Close"
-        >
-          ✕
-        </button>
-      </div>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50">
+      <div className="w-full sm:max-w-md rounded-2xl bg-zinc-900 p-5 shadow-xl">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-lg font-semibold">Bet Slip</h3>
+          <button className="text-white/60 hover:text-white" onClick={() => setOpen(false)}>✕</button>
+        </div>
 
-      <div className="mt-3 text-sm">
-        <div className="text-white/80">{payload.matchup}</div>
-        <div className="mt-1 text-white">{label}</div>
-      </div>
+        <div className="text-sm text-white/80 mb-4">{title}</div>
 
-      <div className="mt-4 flex items-center gap-2">
-        <label className="text-sm text-white/70 w-16">Stake</label>
+        <label className="block text-sm text-white/70 mb-1">Wager ($)</label>
         <input
-          className="flex-1 rounded bg-white/5 px-2 py-1 outline-none"
-          inputMode="decimal"
-          value={stake}
-          onChange={(e) => setStake(e.target.value)}
-          placeholder="5"
+          type="number"
+          min={1}
+          step="1"
+          className="w-full rounded bg-white/5 p-2 mb-3"
+          value={wager}
+          onChange={(e) => setWager(e.target.value)}
+          placeholder="10"
+          disabled={submitting}
         />
-        <span className="text-white/60 text-sm">USD</span>
+
+        {message && (
+          <div className="mb-3 text-sm">
+            <span className="px-2 py-1 rounded bg-white/10">{message}</span>
+          </div>
+        )}
+
+        <div className="flex gap-2 justify-end">
+          <button className="px-3 py-2 rounded bg-white/10 hover:bg-white/20" onClick={() => setOpen(false)} disabled={submitting}>
+            Cancel
+          </button>
+          <button
+            className="px-3 py-2 rounded bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
+            onClick={submit}
+            disabled={!canSubmit}
+          >
+            {submitting ? "Placing…" : "Place Bet"}
+          </button>
+        </div>
       </div>
-
-      <div className="mt-2 text-sm text-white/70">
-        Est. payout: <span className="text-white">${payout.toFixed(2)}</span>
-      </div>
-
-      {error && <div className="mt-2 text-sm text-red-400">{error}</div>}
-
-      <button
-        onClick={placeBet}
-        disabled={submitting}
-        className="mt-4 w-full rounded bg-blue-600 py-2 font-semibold disabled:opacity-60"
-      >
-        {submitting ? "Placing…" : "Place Bet"}
-      </button>
     </div>
   );
 }
@@ -140,8 +143,4 @@ export default function BetSlip() {
 function fmtAmerican(n: number | null | undefined) {
   if (n == null) return "—";
   return n >= 0 ? `+${n}` : `${n}`;
-}
-function fmtSpread(n: number | null | undefined) {
-  if (n == null) return "—";
-  return n > 0 ? `+${n}` : `${n}`;
 }

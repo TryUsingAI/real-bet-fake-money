@@ -1,21 +1,43 @@
-import { supabaseServer } from "@/lib/supabase-server"
-import { redirect } from "next/navigation"
+// src/app/dashboard/page.tsx
+import { redirect } from "next/navigation";
+import { supabaseServer } from "@/lib/supabase-server";
+
+type DbBetRow = {
+  id: string;
+  user_id: string;
+  event_id: number;
+  market: "ml" | "spread" | "total_over" | "total_under" | string;
+  selection: "home" | "away" | "over" | "under" | string;
+  odds_american: number | null;
+  line: number | null;
+  stake_cents: number | null;
+  status: "pending" | "won" | "lost" | "push" | string;
+  payout_cents: number | null;
+  placed_at: string;
+  events:
+    | { home_team: string; away_team: string; commence_time: string }
+    | { home_team: string; away_team: string; commence_time: string }[];
+};
+
+function fmtAmerican(n: number | null | undefined) {
+  if (n == null) return "—";
+  return n >= 0 ? `+${n}` : `${n}`;
+}
+function fmtSpread(n: number | null | undefined) {
+  if (n == null) return "—";
+  return n > 0 ? `+${n}` : `${n}`;
+}
 
 export default async function DashboardPage() {
-  const supabase = await supabaseServer()
+  const supabase = await supabaseServer();
 
-  // Get the current authenticated user
+  // current user
   const {
     data: { user },
-    error: userError,
-  } = await supabase.auth.getUser()
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
 
-  if (userError || !user) {
-    // If no user, go back to login
-    redirect("/login")
-  }
-
-  // Fetch wallet and bets in parallel
+  // wallet + bets
   const [{ data: wallet }, { data: bets }] = await Promise.all([
     supabase
       .from("wallets")
@@ -23,51 +45,120 @@ export default async function DashboardPage() {
       .eq("user_id", user.id)
       .single(),
     supabase
-      .from("v_user_bets")
-      .select("*")
+      .from("bets")
+      .select(
+        `id,user_id,event_id,market,selection,odds_american,line,stake_cents,status,payout_cents,placed_at,
+         events:events(home_team,away_team,commence_time)`
+      )
       .eq("user_id", user.id)
       .order("placed_at", { ascending: false })
-      .limit(20),
-  ])
+      .returns<DbBetRow[]>(),
+  ]);
+
+  const balance =
+    wallet && typeof wallet.balance_cents === "number"
+      ? (wallet.balance_cents / 100).toFixed(2)
+      : "0.00";
 
   return (
     <main className="max-w-2xl mx-auto p-6">
       <h1 className="text-2xl font-bold mb-4">Dashboard</h1>
 
-      {/* Wallet Balance */}
+      {/* Wallet */}
       <section className="mb-6">
         <h2 className="text-xl font-semibold">Wallet</h2>
-        <p className="text-lg">
-          Balance:{" "}
-          {wallet
-            ? `$${(wallet.balance_cents / 100).toFixed(2)}`
-            : "No wallet found"}
-        </p>
+        <p className="text-lg">Balance: ${balance}</p>
       </section>
 
-      {/* Recent Bets */}
+      {/* Bets */}
       <section>
-        <h2 className="text-xl font-semibold mb-2">Recent Bets</h2>
+        <h2 className="text-xl font-semibold mb-2">Your Bets</h2>
+
         {!bets || bets.length === 0 ? (
-          <p className="text-gray-400">No bets placed yet.</p>
+          <p className="text-white/60">No bets placed yet.</p>
         ) : (
-          <ul className="space-y-2">
-            {bets.map((bet) => (
-              <li
-                key={bet.id}
-                className="border rounded p-3 bg-white/5 flex justify-between"
-              >
-                <span>
-                  {bet.game} — {bet.pick}
-                </span>
-                <span className="font-semibold">
-                  Wager: ${(bet.amount_cents / 100).toFixed(2)}
-                </span>
-              </li>
-            ))}
+          <ul className="space-y-3">
+            {bets.map((b) => {
+              // normalize embed (array | object) -> object
+              const evRaw = b.events;
+              const ev = Array.isArray(evRaw) ? evRaw[0] : evRaw;
+              const vs = ev
+                ? `${ev.home_team} vs ${ev.away_team}`
+                : `Event ${b.event_id}`;
+              const start = ev?.commence_time
+                ? new Date(ev.commence_time).toLocaleString(undefined, {
+                    month: "short",
+                    day: "2-digit",
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })
+                : "";
+
+              // render selection/price/line nicely
+              let lineText = "";
+              if (b.market === "ml") {
+                const team = b.selection === "home" ? "HOME" : "AWAY";
+                lineText = `${team} ML (${fmtAmerican(b.odds_american)})`;
+              } else if (b.market === "spread") {
+                const team = b.selection === "home" ? "HOME" : "AWAY";
+                lineText = `${team} ${fmtSpread(b.line)} (${fmtAmerican(
+                  b.odds_american
+                )})`;
+              } else if (b.market === "total_over") {
+                lineText = `OVER ${b.line ?? "—"} (${fmtAmerican(
+                  b.odds_american
+                )})`;
+              } else if (b.market === "total_under") {
+                lineText = `UNDER ${b.line ?? "—"} (${fmtAmerican(
+                  b.odds_american
+                )})`;
+              } else {
+                lineText = `${b.market} ${b.selection}`;
+              }
+
+              const stake =
+                typeof b.stake_cents === "number"
+                  ? (b.stake_cents / 100).toFixed(2)
+                  : "0.00";
+
+              const statusColor =
+                b.status === "won"
+                  ? "bg-green-600"
+                  : b.status === "lost"
+                  ? "bg-red-600"
+                  : b.status === "push"
+                  ? "bg-gray-600"
+                  : "bg-blue-600"; // pending/default
+
+              return (
+                <li
+                  key={b.id}
+                  className="border border-white/10 rounded-lg p-4 bg-white/5"
+                >
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="font-semibold">{vs}</div>
+                      <div className="text-white/60 text-sm">{start}</div>
+                    </div>
+                    <div className="text-sm">
+                      <div className="text-white/70">
+                        Stake: ${stake}
+                      </div>
+                      <div
+                        className={`inline-block mt-1 px-2 py-0.5 rounded text-xs ${statusColor}`}
+                      >
+                        {b.status.charAt(0).toUpperCase() + b.status.slice(1)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-2 text-white/90">{lineText}</div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
     </main>
-  )
+  );
 }
